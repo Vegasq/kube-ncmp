@@ -1,3 +1,4 @@
 ipaddress==1.0.22
 kubernetes==8.0.1
 urllib3==1.23
+prometheus-client==0.5.0
