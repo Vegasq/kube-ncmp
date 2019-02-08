@@ -28,14 +28,8 @@ from prometheus_client import start_http_server, Enum
 # Configure logging
 logger = logging.getLogger('kube-ncmp')
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+ch.setLevel(logging.DEBUG)
 logger.addHandler(ch)
-
-
-# Configure Kubernetes API
-config.load_kube_config()
-configuration.assert_hostname = False
-api_instance = client.CoreV1Api()
 
 
 def ip_to_subnet(ip):
@@ -61,9 +55,17 @@ class Report():
                         report[top_host][down_host][subnet] !=
                         NCMashedPotato.SUCCESS
                     ):
-                        self.enum_state.state(self.FAIL)
+                        # It's already reported as fail, so probaly we can
+                        # skil self.fail() call.
+                        self.fail()
                         return
+        self.ok()
+
+    def ok(self):
         self.enum_state.state(self.OK)
+
+    def fail(self):
+        self.enum_state.state(self.FAIL)
 
 
 class Cache():
@@ -95,6 +97,11 @@ class NCMashedPotato():
         self.filter = filter or None
         self.namespace = namespace
 
+        # Configure Kubernetes API
+        config.load_kube_config()
+        configuration.assert_hostname = False
+        self.api = client.CoreV1Api()
+
         # To communicate with Prometeus
         self.report = Report(port)
         self.pods_in_nodes = self._collect_all_namespaced_pods()
@@ -104,7 +111,7 @@ class NCMashedPotato():
         """
         return: {"hostname": [hostname, pod_name, pod_ip]...}
         """
-        os_pods = api_instance.list_namespaced_pod(self.namespace).items
+        os_pods = self.api.list_namespaced_pod(self.namespace).items
         pods_in_nodes = {}
 
         for pod in os_pods:
@@ -129,7 +136,7 @@ class NCMashedPotato():
 
     def _select_only_nodes_with_ping(self, use_cache=False):
         """Go over all pods and collect ones with ping util."""
-        logger.info("Collecting pods with ping utility.")
+        logger.debug("Collecting pods with ping utility.")
 
         if use_cache:
             pods = Cache.load(self.namespace)
@@ -144,17 +151,8 @@ class NCMashedPotato():
 
             for pod in self.pods_in_nodes[hostname]:
                 try:
-                    resp = stream(
-                        api_instance.connect_get_namespaced_pod_exec,
-                        pod[1],
-                        self.namespace,
-                        command=['/bin/sh', '-c', 'ping'],
-                        container=pod[2],
-                        stderr=True,
-                        stdin=False,
-                        stdout=True,
-                        tty=False
-                    )
+                    resp = self.connect_get_namespaced_pod_exec(
+                        pod[1], pod[2], ['/bin/sh', '-c', 'ping'])
                     if "not found" not in resp:
                         logger.debug("Ping found at %s" % pod)
                         ping_pods[hostname].append(pod)
@@ -165,6 +163,19 @@ class NCMashedPotato():
         # if we want to.
         Cache.save(self.namespace, ping_pods)
         return ping_pods
+
+    def connect_get_namespaced_pod_exec(self, pod_name, container_name, cmd):
+        return stream(
+            self.api.connect_get_namespaced_pod_exec,
+            pod_name,
+            self.namespace,
+            command=cmd,
+            container=container_name,
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False
+        )
 
     def _pods_on_different_nodes(self, pod_ip):
         """Look for a single pod per node that have same subnet."""
@@ -187,18 +198,11 @@ class NCMashedPotato():
         """
         exec_command = ['/bin/sh', '-c', 'ping -c 2 %s' % ip]
         try:
-            resp = stream(
-                api_instance.connect_get_namespaced_pod_exec,
-                name,
-                self.namespace,
-                command=exec_command,
-                container=container,
-                stderr=True,
-                stdin=False,
-                stdout=True,
-                tty=False
-            )
+            resp = self.connect_get_namespaced_pod_exec(
+                name, container, exec_command)
+
             logger.debug("Response: " + resp)
+            print(resp)
             if "0% packet loss" in resp:
                 return self.SUCCESS
         except Exception as err:
@@ -231,15 +235,12 @@ class NCMashedPotato():
             return
         else:
             st = self.check_connection(pod_a[1], pod_a[2], pod_b[3])
+            print("Connection between %s and %s via %s is %s." % (
+                pod_a, pod_b, sub, st))
 
-            # TODO(Mykola): self.report.report_fail() ?
             if st == self.FAIL:
-                self.report.enum_state.state(self.report.FAIL)
+                self.report.fail()
             self.connectivity_status[pod_a[0]][pod_b[0]][sub] = st
-
-        # TODO(Mykola): is self.DEBUG ?
-        print("Current state:")
-        pprint(self.connectivity_status)
 
     def _validate(self):
         """Start validation cycle."""
@@ -261,7 +262,7 @@ class NCMashedPotato():
 
     def start_validation(self):
         """Infinite loop"""
-        logger.info("Start infinity loop.")
+        logger.debug("Start infinity loop.")
         while True:
             logger.debug("Start validation.")
             result = self._validate()
@@ -282,12 +283,7 @@ def main():
                         help='Pod should have it in name.')
     parser.add_argument('--port', type=int, default=8000,
                         help='Port for Prometeus.')
-
-    parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
-
-    if args.debug:
-        ch.setLevel(logging.DEBUG)
 
     NCMashedPotato(namespace=args.namespace,
                    filter=args.filter,
