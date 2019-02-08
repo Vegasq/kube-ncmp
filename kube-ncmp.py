@@ -1,5 +1,5 @@
-#!/bin/sh
-# Copyright 2019 AT&T Intellectual Property.  All other rights reserved.
+#!/usr/bin/python
+# Copyright 2019 AT&T Intellectual Property. All other rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ from prometheus_client import start_http_server, Enum
 
 
 # Configure logging
-logger = logging.getLogger('kube-ncmp')
+logger = logging.getLogger("kube-ncmp")
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 logger.addHandler(ch)
@@ -36,15 +36,17 @@ def ip_to_subnet(ip):
     return ".".join(ip.split(".")[:2] + ["x", "x"])
 
 
-class Report():
+class Report:
     OK = "OK"
     FAIL = "FAIL"
     UNKNOWN = "UNKNOWN"
 
     def __init__(self, port=8000):
         self.enum_state = Enum(
-            'network_state', 'Current state of underlay networking',
-            states=[self.UNKNOWN, self.OK, self.FAIL])
+            "network_state",
+            "Current state of underlay networking",
+            states=[self.UNKNOWN, self.OK, self.FAIL],
+        )
         start_http_server(port)
 
     def report_state(self, report):
@@ -52,8 +54,8 @@ class Report():
             for down_host in report[top_host]:
                 for subnet in report[top_host][down_host]:
                     if (
-                        report[top_host][down_host][subnet] !=
-                        NCMashedPotato.SUCCESS
+                        report[top_host][down_host][subnet]
+                        != NCMashedPotato.SUCCESS
                     ):
                         # It's already reported as fail, so probaly we can
                         # skip self.fail() call.
@@ -68,7 +70,7 @@ class Report():
         self.enum_state.state(self.FAIL)
 
 
-class Cache():
+class Cache:
     ping_pods_cache_path = "/tmp/%s_ping_pods_cache"
 
     @classmethod
@@ -89,7 +91,7 @@ class Cache():
             fl.write(json.dumps(pods))
 
 
-class NCMashedPotato():
+class NCMashedPotato:
     SUCCESS = "Success"
     FAIL = "Fail"
 
@@ -127,8 +129,13 @@ class NCMashedPotato():
 
             if pod.status.container_statuses[0].state.running:
                 pods_in_nodes[host_name].append(
-                    [host_name, pod.metadata.name,
-                     container_name, pod.status.pod_ip])
+                    [
+                        host_name,
+                        pod.metadata.name,
+                        container_name,
+                        pod.status.pod_ip,
+                    ]
+                )
 
         return pods_in_nodes
 
@@ -150,7 +157,8 @@ class NCMashedPotato():
             for pod in self.pods_in_nodes[hostname]:
                 try:
                     resp = self.connect_get_namespaced_pod_exec(
-                        pod[1], pod[2], ['/bin/sh', '-c', 'ping'])
+                        pod[1], pod[2], ["/bin/sh", "-c", "ping"]
+                    )
                     if "not found" not in resp:
                         logger.debug("Ping found at %s" % pod)
                         ping_pods[hostname].append(pod)
@@ -172,7 +180,7 @@ class NCMashedPotato():
             stderr=True,
             stdin=False,
             stdout=True,
-            tty=False
+            tty=False,
         )
 
     def _pods_on_different_nodes(self, pod_ip):
@@ -194,13 +202,13 @@ class NCMashedPotato():
 
         Only output with `0% packet loss` in it recognized as successful.
         """
-        exec_command = ['/bin/sh', '-c', 'ping -c 2 %s' % ip]
+        exec_command = ["/bin/sh", "-c", "ping -c 2 %s" % ip]
         try:
             resp = self.connect_get_namespaced_pod_exec(
-                name, container, exec_command)
+                name, container, exec_command
+            )
 
             logger.debug("Response: " + resp)
-            print(resp)
             if "0% packet loss" in resp:
                 return self.SUCCESS
         except Exception as err:
@@ -233,8 +241,10 @@ class NCMashedPotato():
             return
         else:
             st = self.check_connection(pod_a[1], pod_a[2], pod_b[3])
-            print("Connection between %s and %s via %s is %s." % (
-                pod_a, pod_b, sub, st))
+            print(
+                "Connection between %s and %s via %s is %s."
+                % (pod_a, pod_b, sub, st)
+            )
 
             if st == self.FAIL:
                 self.report.fail()
@@ -249,7 +259,8 @@ class NCMashedPotato():
                 for remote_pod in self._pods_on_different_nodes(ping_pod[3]):
                     logger.debug(
                         "Check connectivity between differen nodes: "
-                        "%s -> %s" % (ping_pod, remote_pod))
+                        "%s -> %s" % (ping_pod, remote_pod)
+                    )
                     # It will update self.connectivity_status
                     self._validate_connection_between(ping_pod, remote_pod)
 
@@ -270,23 +281,34 @@ class NCMashedPotato():
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='NC Mashed Potato',
-        description='Tool to validate interconnection between containers '
-                    'in kubernetes cloud.')
-    parser.add_argument('--cache', action='store_true',
-                        help='Use cached collection of nodes with ping.')
-    parser.add_argument('--namespace', default='openstack',
-                        help='Kuberenetes namespace to play with.')
-    parser.add_argument('--filter', default='',
-                        help='Pod should have it in name.')
-    parser.add_argument('--port', type=int, default=8000,
-                        help='Port for Prometeus.')
+        prog="NC Mashed Potato",
+        description="Tool to validate interconnection between containers "
+        "in kubernetes cloud.",
+    )
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Use cached collection of nodes with ping.",
+    )
+    parser.add_argument(
+        "--namespace",
+        default="openstack",
+        help="Kuberenetes namespace to play with.",
+    )
+    parser.add_argument(
+        "--filter", default="", help="Pod should have it in name."
+    )
+    parser.add_argument(
+        "--port", type=int, default=8000, help="Port for Prometeus."
+    )
     args = parser.parse_args()
 
-    NCMashedPotato(namespace=args.namespace,
-                   filter=args.filter,
-                   port=args.port,
-                   use_cache=args.cache).start_validation()
+    NCMashedPotato(
+        namespace=args.namespace,
+        filter=args.filter,
+        port=args.port,
+        use_cache=args.cache,
+    ).start_validation()
 
 
 if __name__ == "__main__":
