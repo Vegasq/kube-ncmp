@@ -1,3 +1,18 @@
+#!/bin/sh
+# Copyright 2019 AT&T Intellectual Property.  All other rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import argparse
 import logging
 import json
@@ -7,7 +22,7 @@ from kubernetes import client, config
 from kubernetes.client import configuration
 from kubernetes.stream import stream
 
-from prometheus_client import start_http_server, Summary, Enum
+from prometheus_client import start_http_server, Enum
 
 
 # Configure logging
@@ -21,7 +36,6 @@ logger.addHandler(ch)
 config.load_kube_config()
 configuration.assert_hostname = False
 api_instance = client.CoreV1Api()
-ping_pods_cache = "/tmp/%s_ping_pods_cache"
 
 
 def ip_to_subnet(ip):
@@ -52,61 +66,83 @@ class Report():
         self.enum_state.state(self.OK)
 
 
+class Cache():
+    ping_pods_cache_path = "/tmp/%s_ping_pods_cache"
+
+    @classmethod
+    def load(cls, namespace):
+        cls.ping_pods_cache = cls.ping_pods_cache_path % namespace
+
+        try:
+            with open(cls.ping_pods_cache, "r") as fl:
+                return json.loads(fl.read())
+        except IOError:
+            logger.error("No ping_pods cache found")
+        return None
+
+    @classmethod
+    def save(cls, namespace, pods):
+        cls.ping_pods_cache = cls.ping_pods_cache_path % namespace
+        with open(cls.ping_pods_cache, "w") as fl:
+            fl.write(json.dumps(pods))
+
+
 class NCMashedPotato():
     SUCCESS = "Success"
+    FAIL = "Fail"
 
     def __init__(self, namespace, filter, port, use_cache=True):
-        self.report = Report(port)
-
         self.filter = filter or None
         self.namespace = namespace
-        self.ping_pods_cache = ping_pods_cache % self.namespace
 
-        self.all_os = self._collect_all_openstack_pods()
-        logger.info("Validating nodes %s" % self.all_os)
+        # To communicate with Prometeus
+        self.report = Report(port)
+        self.pods_in_nodes = self._collect_all_namespaced_pods()
         self.ping_pods = self._select_only_nodes_with_ping(use_cache=use_cache)
 
-    def _collect_all_openstack_pods(self):
+    def _collect_all_namespaced_pods(self):
         """
         return: {"hostname": [hostname, pod_name, pod_ip]...}
         """
         os_pods = api_instance.list_namespaced_pod(self.namespace).items
-
-        all_ips = {}
+        pods_in_nodes = {}
 
         for pod in os_pods:
             host_name = pod.spec.node_name
             pod_name = pod.metadata.name
             pod_ip = pod.status.pod_ip
+            # TODO(Mykola): We select only first container within pod,
+            #               should we use all of them?
             container_name = pod.spec.containers[0].name
 
             if self.filter and self.filter not in pod_name:
                 continue
-            if host_name not in all_ips:
-                all_ips[host_name] = []
+
+            if host_name not in pods_in_nodes:
+                pods_in_nodes[host_name] = []
+
             if pod.status.container_statuses[0].state.running:
-                all_ips[host_name].append([host_name, pod_name,
-                                           container_name, pod_ip])
-        return all_ips
+                pods_in_nodes[host_name].append(
+                    [host_name, pod_name, container_name, pod_ip])
+
+        return pods_in_nodes
 
     def _select_only_nodes_with_ping(self, use_cache=False):
         """Go over all pods and collect ones with ping util."""
         logger.info("Collecting pods with ping utility.")
 
         if use_cache:
-            try:
-                with open(self.ping_pods_cache, "r") as fl:
-                    return json.loads(fl.read())
-            except IOError:
-                logger.error("No ping_pods cache found")
+            pods = Cache.load(self.namespace)
+            if pods:
+                return pods
 
         ping_pods = {}
 
-        for hostname in self.all_os:
-            logger.debug("Checking host %s" % hostname)
+        for hostname in self.pods_in_nodes:
             if hostname not in ping_pods:
                 ping_pods[hostname] = []
-            for pod in self.all_os[hostname]:
+
+            for pod in self.pods_in_nodes[hostname]:
                 try:
                     resp = stream(
                         api_instance.connect_get_namespaced_pod_exec,
@@ -124,30 +160,32 @@ class NCMashedPotato():
                         ping_pods[hostname].append(pod)
                 except Exception as err:
                     logger.error(err)
-                    raise
-        with open(self.ping_pods_cache, "w") as fl:
-            fl.write(json.dumps(ping_pods))
+
+        # We will save it even when use_cache == False, so we can use it next
+        # if we want to.
+        Cache.save(self.namespace, ping_pods)
         return ping_pods
 
     def _pods_on_different_nodes(self, pod_ip):
+        """Look for a single pod per node that have same subnet."""
         yielded_hosts = []
-        for name in self.all_os:
-            for pod in self.all_os[name]:
+        for name in self.pods_in_nodes:
+            for pod in self.pods_in_nodes[name]:
                 if name in yielded_hosts:
                     continue
-                if (
-                    ".".join(pod_ip.split(".")[:2]) ==
-                    ".".join(pod[3].split(".")[:2])
-                ):
+                if ip_to_subnet(pod_ip) == ip_to_subnet(pod[3]):
+                    # We need ony one pod per node, so we track already found
+                    # nodes.
                     yielded_hosts.append(name)
                     yield pod
 
     def check_connection(self, name, container, ip):
-        """Check connection betwee pod `name` and remote `ip`."""
-        exec_command = [
-            '/bin/sh',
-            '-c',
-            'ping -c 2 %s' % ip]
+        """Use K8S API method connect_get_namespaced_pod_exec to ping
+        specifyed IP.
+
+        Only output with `0% packet loss` in it recognized as successful.
+        """
+        exec_command = ['/bin/sh', '-c', 'ping -c 2 %s' % ip]
         try:
             resp = stream(
                 api_instance.connect_get_namespaced_pod_exec,
@@ -167,17 +205,44 @@ class NCMashedPotato():
             logger.error(err)
 
         # Report Fail before end of validation since we already knwo the result
-        self.report.enum_state.state(self.report.FAIL)
-        return "Fail"
+        return self.FAIL
 
     def _generate_report_tempalte(self):
-        hosts = self.all_os.keys()
+        """For every loop cycle, create new dict of hosts."""
+        hosts = self.pods_in_nodes.keys()
         connectivity_status = {}
         for host in hosts:
             connectivity_status[host] = {h: {} for h in hosts}
         return connectivity_status
 
+    def _validate_connection_between(self, pod_a, pod_b):
+        """Check connectivity between two nodes if state between nodes
+        is unknown, and update connection status report.
+
+        If connectivity is broken, report failure immediately.
+        """
+        sub = ip_to_subnet(pod_a[3])
+        if sub not in self.connectivity_status[pod_a[0]][pod_b[0]]:
+            self.connectivity_status[pod_a[0]][pod_b[0]][sub] = {}
+
+        # We already had one successful attempt, underlay network
+        # is working
+        if self.connectivity_status[pod_a[0]][pod_b[0]][sub] == self.SUCCESS:
+            return
+        else:
+            st = self.check_connection(pod_a[1], pod_a[2], pod_b[3])
+
+            # TODO(Mykola): self.report.report_fail() ?
+            if st == self.FAIL:
+                self.report.enum_state.state(self.report.FAIL)
+            self.connectivity_status[pod_a[0]][pod_b[0]][sub] = st
+
+        # TODO(Mykola): is self.DEBUG ?
+        print("Current state:")
+        pprint(self.connectivity_status)
+
     def _validate(self):
+        """Start validation cycle."""
         self.connectivity_status = self._generate_report_tempalte()
 
         for ping_host in self.ping_pods:
@@ -186,39 +251,16 @@ class NCMashedPotato():
                     logger.debug(
                         "Check connectivity between differen nodes: "
                         "%s -> %s" % (ping_pod, remote_pod))
+                    # It will update self.connectivity_status
+                    self._validate_connection_between(ping_pod, remote_pod)
 
-                    sub = ip_to_subnet(ping_pod[3])
-                    if (
-                        sub not in
-                        self.connectivity_status[ping_host][remote_pod[0]]
-                    ):
-                        self.connectivity_status[
-                            ping_host][remote_pod[0]][sub] = {}
-
-                    # We already had one successful attempt, underlay network
-                    # is working
-                    if (
-                        self.connectivity_status[ping_host][remote_pod[0]][
-                            sub] == self.SUCCESS
-                    ):
-                        continue
-                    else:
-                        st = self.check_connection(ping_pod[1], ping_pod[2],
-                                                   remote_pod[3])
-                        self.connectivity_status[
-                            ping_host][remote_pod[0]][sub] = st
-
-                    print("Current state:")
-                    pprint(self.connectivity_status)
-
-        print("~" * 80)
-        print("Final state:")
-        print("~" * 80)
+        # TODO(Mykola): is self.DEBUG ?
         pprint(self.connectivity_status)
 
         return self.connectivity_status
 
     def start_validation(self):
+        """Infinite loop"""
         logger.info("Start infinity loop.")
         while True:
             logger.debug("Start validation.")
