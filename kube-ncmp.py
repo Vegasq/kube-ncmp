@@ -56,7 +56,7 @@ class Report():
                         NCMashedPotato.SUCCESS
                     ):
                         # It's already reported as fail, so probaly we can
-                        # skil self.fail() call.
+                        # skip self.fail() call.
                         self.fail()
                         return
         self.ok()
@@ -112,25 +112,23 @@ class NCMashedPotato():
         return: {"hostname": [hostname, pod_name, pod_ip]...}
         """
         os_pods = self.api.list_namespaced_pod(self.namespace).items
+        if self.filter:
+            os_pods = [p for p in os_pods if self.filter in p.metadata.name]
         pods_in_nodes = {}
 
         for pod in os_pods:
             host_name = pod.spec.node_name
-            pod_name = pod.metadata.name
-            pod_ip = pod.status.pod_ip
             # TODO(Mykola): We select only first container within pod,
             #               should we use all of them?
             container_name = pod.spec.containers[0].name
-
-            if self.filter and self.filter not in pod_name:
-                continue
 
             if host_name not in pods_in_nodes:
                 pods_in_nodes[host_name] = []
 
             if pod.status.container_statuses[0].state.running:
                 pods_in_nodes[host_name].append(
-                    [host_name, pod_name, container_name, pod_ip])
+                    [host_name, pod.metadata.name,
+                     container_name, pod.status.pod_ip])
 
         return pods_in_nodes
 
