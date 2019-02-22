@@ -100,7 +100,10 @@ class NCMashedPotato:
         self.namespace = namespace
 
         # Configure Kubernetes API
-        config.load_kube_config()
+        try:
+            config.load_kube_config()
+        except:
+            config.load_kube_config('/etc/kubernetes/admin/kubeconfig.yaml')
         configuration.assert_hostname = False
         self.api = client.CoreV1Api()
 
