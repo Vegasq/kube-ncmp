@@ -17,10 +17,10 @@ docker build . -t kube-ncmp
 
 #### Run container
 ```
-docker run -p 6126:6126 kube-ncmp:latest
+docker run -d -p 6126:6126 kube-ncmp:latest
 ```
 
 #### Run tool
 ```
-python kube-ncmp.py --cache --namespace kube-system
+python3 kube-ncmp.py --cache --namespace kube-system
 ```
