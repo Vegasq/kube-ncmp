@@ -12,7 +12,6 @@ RUN apt-get update ;\
     apt-get install -y --no-install-recommends python-pip python-setuptools python3-pip python3-dev
 
 RUN pip3 install --upgrade pip
-#Verify if we need this setuptools.
 RUN pip3 install setuptools
 RUN pip3 install -r /app/requirements.txt
 
