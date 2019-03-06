@@ -16,6 +16,7 @@
 import argparse
 import logging
 import json
+import re
 import subprocess
 from pprint import pprint
 
@@ -110,14 +111,22 @@ class NCMashedPotato:
         self.filter = filter or None
         self.namespace = namespace
 
-        self.conf = client.Configuration()
-        self.cmd1 = ("kubectl describe secret $(kubectl get secrets |" "grep ^prometheus-network-metrics | cut -f1 -d ' ') | grep -E '^token'" "|cut -f2 -d':'|tr -d ' '")
-        self.cmd2 = (“kubectl cluster-info | grep master | cut -f6 -d ' '”)
-        self.token = subprocess.check_output(self.cmd1, stderr=subprocess.STDOUT,shell=True).decode('utf-8').strip("\n")
-        #TODO: self.host gives output as follows “'\x1b[0;33mhttps://10.96.0.1:443\x1b[0m'“ should be formatted to https://10.96.0.1:443
-        self.host = subprocess.check_output(self.cmd2, stderr=subprocess.STDOUT,shell=True).decode('utf-8').strip("\n")
-        self.conf.verify_ssl = False
-        self.conf.host=self.host
+        conf = client.Configuration()
+        conf.verify_ssl = False
+
+        token_cmd = ("kubectl describe secret $(kubectl get secrets | "
+                     "grep ^prometheus-network-metrics | cut -f1 -d ' ') | "
+                     "grep -E '^token'" "|cut -f2 -d':'|tr -d ' '")
+        self.token = subprocess.check_output(
+            token_cmd, stderr=subprocess.STDOUT, shell=True
+        ).decode('utf-8').strip("\n")
+
+        kube_api = ("kubectl cluster-info | grep master | cut -f6 -d ' '")
+        host_output = subprocess.check_output(
+            kube_api, stderr=subprocess.STDOUT, shell=True
+        ).decode('utf-8').strip("\n")
+        conf.host = re.findall('http\w*://.*:\d{1,4}', host_output)[0]
+
         self.kube_api_client = client.ApiClient(conf)
         self.api = client.CoreV1Api(self.kube_api_client)
 
