@@ -46,28 +46,38 @@ class Report:
             "network_state",
             "Current state of underlay networking",
             states=[self.UNKNOWN, self.OK, self.FAIL],
+            labelnames=['host_from', 'host_to', 'namespace', 'network']
         )
+
         start_http_server(port)
 
-    def report_state(self, report):
-        for top_host in report:
-            for down_host in report[top_host]:
-                for subnet in report[top_host][down_host]:
-                    if (
-                        report[top_host][down_host][subnet]
-                        != NCMashedPotato.SUCCESS
-                    ):
-                        # It's already reported as fail, so probaly we can
-                        # skip self.fail() call.
-                        self.fail()
-                        return
-        self.ok()
+    # def report_state(self, report):
+    #     for top_host in report:
+    #         for down_host in report[top_host]:
+    #             for subnet in report[top_host][down_host]:
+    #                 if (
+    #                     report[top_host][down_host][subnet]
+    #                     != NCMashedPotato.SUCCESS
+    #                 ):
+    #                     # It's already reported as fail, so probaly we can
+    #                     # skip self.fail() call.
+    #                     self.fail(top_host, down_host)
+    #                     return
+    #     self.ok(top_host, down_host)
 
-    def ok(self):
-        self.enum_state.state(self.OK)
+    def ok(self, host_from, host_to, namespace, network):
+        self.enum_state.labels(
+            host_from=host_from,
+            host_to=host_to,
+            namespace=namespace,
+            network=network).state(self.OK)
 
-    def fail(self):
-        self.enum_state.state(self.FAIL)
+    def fail(self, host_from, host_to, namespace, network):
+        self.enum_state.labels(
+            host_from=host_from,
+            host_to=host_to,
+            namespace=namespace,
+            network=network).state(self.FAIL)
 
 
 class Cache:
@@ -246,8 +256,15 @@ class NCMashedPotato:
                 % (pod_a, pod_b, sub, st)
             )
 
-            if st == self.FAIL:
-                self.report.fail()
+            if st == self.SUCCESS:
+                f = self.report.ok
+            else:
+                f = self.report.fail
+
+            f(host_from=pod_a[0], host_to=pod_b[0],
+              namespace=self.namespace, network=sub)
+
+            # Keep result to not report multiple times.
             self.connectivity_status[pod_a[0]][pod_b[0]][sub] = st
 
     def _validate(self):
@@ -274,9 +291,9 @@ class NCMashedPotato:
         logger.debug("Start infinity loop.")
         while True:
             logger.debug("Start validation.")
-            result = self._validate()
-            logger.debug("Validation complete. Report state to Prometeus.")
-            self.report.report_state(result)
+            self._validate()
+            # logger.debug("Validation complete. Report state to Prometeus.")
+            # self.report.report_state(result)
 
 
 def main():
