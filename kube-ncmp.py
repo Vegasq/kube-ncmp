@@ -16,6 +16,7 @@
 import argparse
 import logging
 import json
+import subprocess
 from pprint import pprint
 
 from kubernetes import client, config
@@ -109,10 +110,16 @@ class NCMashedPotato:
         self.filter = filter or None
         self.namespace = namespace
 
-        # Configure Kubernetes API
-        config.load_kube_config()
-        configuration.assert_hostname = False
-        self.api = client.CoreV1Api()
+        self.conf = client.Configuration()
+        self.cmd1 = ("kubectl describe secret $(kubectl get secrets |" "grep ^prometheus-network-metrics | cut -f1 -d ' ') | grep -E '^token'" "|cut -f2 -d':'|tr -d ' '")
+        self.cmd2 = (“kubectl cluster-info | grep master | cut -f6 -d ' '”)
+        self.token = subprocess.check_output(self.cmd1, stderr=subprocess.STDOUT,shell=True).decode('utf-8').strip("\n")
+        #TODO: self.host gives output as follows “'\x1b[0;33mhttps://10.96.0.1:443\x1b[0m'“ should be formatted to https://10.96.0.1:443
+        self.host = subprocess.check_output(self.cmd2, stderr=subprocess.STDOUT,shell=True).decode('utf-8').strip("\n")
+        self.conf.verify_ssl = False
+        self.conf.host=self.host
+        self.kube_api_client = client.ApiClient(conf)
+        self.api = client.CoreV1Api(self.kube_api_client)
 
         # To communicate with Prometeus
         self.report = Report(port)
