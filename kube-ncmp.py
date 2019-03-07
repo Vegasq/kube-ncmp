@@ -114,13 +114,6 @@ class NCMashedPotato:
         conf = client.Configuration()
         conf.verify_ssl = False
 
-        token_cmd = ("kubectl describe secret $(kubectl get secrets | "
-                     "grep ^prometheus-network-metrics | cut -f1 -d ' ') | "
-                     "grep -E '^token'" "|cut -f2 -d':'|tr -d ' '")
-        self.token = subprocess.check_output(
-            token_cmd, stderr=subprocess.STDOUT, shell=True
-        ).decode('utf-8').strip("\n")
-
         kube_api = ("kubectl cluster-info | grep master | cut -f6 -d ' '")
         host_output = subprocess.check_output(
             kube_api, stderr=subprocess.STDOUT, shell=True
