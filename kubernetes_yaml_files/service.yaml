@@ -1,0 +1,17 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: prometheus-kube-network-metrics
+  name: prometheus-kube-network-metrics
+  namespace: osh-infra
+spec:
+  ports:
+  - nodePort: 6127
+    port: 6126
+    protocol: TCP
+    targetPort: 6126
+  selector:
+    app: prometheus-kube-network-metrics
+  type: NodePort
