@@ -82,7 +82,7 @@ class Report:
 
 
 class Cache:
-    ping_pods_cache_path = "/tmp/%s_ping_pods_cache"
+    ping_pods_cache_path = "/var/log/%s_ping_pods_cache"
 
     @classmethod
     def load(cls, namespace):
@@ -109,15 +109,8 @@ class NCMashedPotato:
     def __init__(self, namespace, filter, port, use_cache=True):
         self.filter = filter or None
         self.namespace = namespace
-
-        self.conf = client.Configuration()
-        self.cmd1 = ("kubectl describe secret $(kubectl get secrets |" "grep ^prometheus-network-metrics | cut -f1 -d ' ') | grep -E '^token'" "|cut -f2 -d':'|tr -d ' '")
-        self.cmd2 = (“kubectl cluster-info | grep master | cut -f6 -d ' '”)
-        self.token = subprocess.check_output(self.cmd1, stderr=subprocess.STDOUT,shell=True).decode('utf-8').strip("\n")
-        #TODO: self.host gives output as follows “'\x1b[0;33mhttps://10.96.0.1:443\x1b[0m'“ should be formatted to https://10.96.0.1:443
-        self.host = subprocess.check_output(self.cmd2, stderr=subprocess.STDOUT,shell=True).decode('utf-8').strip("\n")
-        self.conf.verify_ssl = False
-        self.conf.host=self.host
+        self.kube_api_client = self.get_api()
+        self.api = client.CoreV1Api(self.kube_api_client)
         self.kube_api_client = client.ApiClient(conf)
         self.api = client.CoreV1Api(self.kube_api_client)
 
@@ -125,6 +118,16 @@ class NCMashedPotato:
         self.report = Report(port)
         self.pods_in_nodes = self._collect_all_namespaced_pods()
         self.ping_pods = self._select_only_nodes_with_ping(use_cache=use_cache)
+
+    def get_api(self):
+        cmd = ("kubectl describe secret $(kubectl get secrets |" "grep ^prometheus-kube-network-metrics | cut -f1 -d ' ') | grep -E '^token'" "|cut -f2 -d':'|tr -d ' '")
+        token = subprocess.check_output(cmd, stderr=subprocess.STDOUT,shell=True).decode('utf-8').strip("\n")
+        conf = client.Configuration()
+        conf.api_key = {"authorization": "Bearer " + token}
+        conf.verify_ssl = False
+        conf.host="https://10.96.0.1:443"
+        api_client = client.ApiClient(conf)
+        return api_client
 
     def _collect_all_namespaced_pods(self):
         """
