@@ -16,8 +16,7 @@
 import argparse
 import logging
 import json
-import re
-import subprocess
+import time
 from pprint import pprint
 
 from kubernetes import client, config
@@ -53,20 +52,6 @@ class Report:
 
         start_http_server(port)
 
-    # def report_state(self, report):
-    #     for top_host in report:
-    #         for down_host in report[top_host]:
-    #             for subnet in report[top_host][down_host]:
-    #                 if (
-    #                     report[top_host][down_host][subnet]
-    #                     != NCMashedPotato.SUCCESS
-    #                 ):
-    #                     # It's already reported as fail, so probaly we can
-    #                     # skip self.fail() call.
-    #                     self.fail(top_host, down_host)
-    #                     return
-    #     self.ok(top_host, down_host)
-
     def ok(self, host_from, host_to, namespace, network):
         self.enum_state.labels(
             host_from=host_from,
@@ -83,7 +68,7 @@ class Report:
 
 
 class Cache:
-    ping_pods_cache_path = "/tmp/%s_ping_pods_cache"
+    ping_pods_cache_path = "/var/log/%s_ping_pods_cache"
 
     @classmethod
     def load(cls, namespace):
@@ -114,14 +99,9 @@ class NCMashedPotato:
         conf = client.Configuration()
         conf.verify_ssl = False
 
-        kube_api = ("kubectl cluster-info | grep master | cut -f6 -d ' '")
-        host_output = subprocess.check_output(
-            kube_api, stderr=subprocess.STDOUT, shell=True
-        ).decode('utf-8').strip("\n")
-        conf.host = re.findall('http\w*://.*:\d{1,4}', host_output)[0]
-
-        self.kube_api_client = client.ApiClient(conf)
-        self.api = client.CoreV1Api(self.kube_api_client)
+        config.load_incluster_config()
+        configuration.assert_hostname = False
+        self.api = client.CoreV1Api()
 
         # To communicate with Prometeus
         self.report = Report(port)
@@ -295,14 +275,13 @@ class NCMashedPotato:
 
         return self.connectivity_status
 
-    def start_validation(self):
+    def start_validation(self, sleep_for):
         """Infinite loop"""
         logger.debug("Start infinity loop.")
         while True:
             logger.debug("Start validation.")
             self._validate()
-            # logger.debug("Validation complete. Report state to Prometeus.")
-            # self.report.report_state(result)
+            time.sleep(sleep_for)
 
 
 def main():
@@ -327,6 +306,9 @@ def main():
     parser.add_argument(
         "--port", type=int, default=8000, help="Port for Prometeus."
     )
+    parser.add_argument(
+        "--sleep", type=int, default=0, help="How long to sleep between runs."
+    )
     args = parser.parse_args()
 
     NCMashedPotato(
@@ -334,7 +316,7 @@ def main():
         filter=args.filter,
         port=args.port,
         use_cache=args.cache,
-    ).start_validation()
+    ).start_validation(args.sleep)
 
 
 if __name__ == "__main__":
