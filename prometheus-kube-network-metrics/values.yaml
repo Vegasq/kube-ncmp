@@ -1,0 +1,30 @@
+# Default values for prometheus-kube-network-metrics.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+releaseName: prometheus-kube-network-metrics 
+replicaCount: 1
+nameSpace: osh-infra
+
+image:
+  repository: new_kube_ncmp
+  tag: latest
+  pullPolicy: IfNotPresent
+
+labels:
+  kube_network_metrics:
+    node_selector_key: openstack-control-plane
+    node_selector_value: enabled
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: NodePort
+  port: 6126
+
+manifests:
+  serviceaccount: true
+  configmap_bin: true
+  deployment: true
+  service_kube_network_metrics: true  
