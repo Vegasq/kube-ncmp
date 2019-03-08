@@ -68,5 +68,5 @@ spec:
             name: {{ .Values.releaseName }}
             items:
             - key: ncmp
-              path: ../kube_ncmp.py
+              path: kube_ncmp.py
 {{- end }}
