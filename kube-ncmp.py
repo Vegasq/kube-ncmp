@@ -20,10 +20,14 @@ import time
 from pprint import pprint
 
 from kubernetes import client, config
+from kubernetes.config import config_exception
 from kubernetes.client import configuration
 from kubernetes.stream import stream
 
 from prometheus_client import start_http_server, Enum
+from prometheus_client.core import REGISTRY
+from prometheus_client.process_collector import PROCESS_COLLECTOR
+from prometheus_client.platform_collector import PLATFORM_COLLECTOR
 
 
 # Configure logging
@@ -31,6 +35,17 @@ logger = logging.getLogger("kube-ncmp")
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 logger.addHandler(ch)
+
+
+class Config(dict):
+    def __getattr__(self, key):
+        return self[key]
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+
+CONFIG = Config()
 
 
 def ip_to_subnet(ip):
@@ -49,6 +64,9 @@ class Report:
             states=[self.UNKNOWN, self.OK, self.FAIL],
             labelnames=['host_from', 'host_to', 'namespace', 'network']
         )
+        if not CONFIG.show_system_info:
+            REGISTRY.unregister(PROCESS_COLLECTOR)
+            REGISTRY.unregister(PLATFORM_COLLECTOR)
 
         start_http_server(port)
 
@@ -99,7 +117,12 @@ class NCMashedPotato:
         conf = client.Configuration()
         conf.verify_ssl = False
 
-        config.load_incluster_config()
+        try:
+            config.load_incluster_config()
+        except config_exception.ConfigException:
+            # Fallback for non-container usage
+            config.load_kube_config()
+
         configuration.assert_hostname = False
         self.api = client.CoreV1Api()
 
@@ -309,7 +332,14 @@ def main():
     parser.add_argument(
         "--sleep", type=int, default=0, help="How long to sleep between runs."
     )
+    parser.add_argument(
+        "--show-system-info",
+        action="store_true",
+        help="Enable process and platform collectors."
+    )
     args = parser.parse_args()
+
+    CONFIG.show_system_info = args.show_system_info
 
     NCMashedPotato(
         namespace=args.namespace,
