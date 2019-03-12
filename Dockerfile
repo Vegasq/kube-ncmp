@@ -14,4 +14,3 @@ RUN apt-get install -y kubectl
 RUN pip3 install --upgrade pip
 RUN pip3 install setuptools
 RUN pip3 install ipaddress setuptools kubernetes prometheus-client
-
