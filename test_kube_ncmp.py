@@ -21,8 +21,7 @@ from kube_ncmp import Report
 from kube_ncmp import SomeList
 from kube_ncmp import SomeListMissuse
 from kube_ncmp import Container
-
-# from kube_ncmp import ip_to_prefix
+from kube_ncmp import NCMashedPotato
 
 
 def test_ip_to_prefix():
@@ -230,47 +229,91 @@ def test_container():
     assert cnt.ip == ip
 
 
-def test_report_ok(monkeypatch):
+def test_report_ok(monkeypatch, mocker):
     class FakeArgs:
         namespace = ""
     CONFIG.set_args(FakeArgs())
 
     def new_init(self):
-        this = self
-        class Lbls:
-            def labels(self, *args, **kwargs):
-                this.labels_called = True
-                class St:
-                    def set(self, *args, **kwargs):
-                        this.set_called = True
-                return St()
-        self.state = Lbls()
+        self.state = mocker.MagicMock()
 
     monkeypatch.setattr(Report, '__init__', new_init)
     r = Report()
     r.ok(1, 2, 3)
-    assert r.labels_called
-    assert r.set_called
+    r.state.labels.assert_called_once()
+    r.state.labels().set.assert_called_once()
 
 
-def test_report_fail(monkeypatch):
+def test_report_fail(monkeypatch, mocker):
     class FakeArgs:
         namespace = ""
     CONFIG.set_args(FakeArgs())
 
     def new_init(self):
-        this = self
-        class Lbls:
-            def labels(self, *args, **kwargs):
-                this.labels_called = True
-                class St:
-                    def set(self, *args, **kwargs):
-                        this.set_called = True
-                return St()
-        self.state = Lbls()
+        self.state = mocker.MagicMock()
 
     monkeypatch.setattr(Report, '__init__', new_init)
+
     r = Report()
     r.fail(1, 2, 3)
-    assert r.labels_called
-    assert r.set_called
+    r.state.labels.assert_called_once()
+    r.state.labels().set.assert_called_once()
+
+
+def test_ncmp_containers_on_different_nodes(monkeypatch):
+    def new_init(self):
+        c1 = Container("host0", "pod", "container", "ip")
+        c2 = Container("host1", "pod", "container", "ip")
+        c3 = Container("host1", "pod", "container", "ip")
+        c4 = Container("host2", "pod", "container", "ip")
+        c5 = Container("host2", "pod", "container", "ip")
+        self._containers = [c1, c2, c3, c4, c5]
+
+    monkeypatch.setattr(NCMashedPotato, '__init__', new_init)
+    cnt = Container("host0", "pod", "container", "ip")
+
+    ncmp = NCMashedPotato()
+    all_hosts = [i.host for i in
+                 ncmp._containers_on_different_nodes(cnt)]
+    assert len(all_hosts) == 3
+
+
+def test_ncmp_check_connection(monkeypatch, mocker):
+    def new_init(self):
+        self._containers = []
+
+    monkeypatch.setattr(NCMashedPotato, '__init__', new_init)
+
+    c1 = Container("host0", "pod", "container", "ip")
+    c2 = Container("host1", "pod", "container", "ip")
+
+    ncmp = NCMashedPotato()
+
+    ncmp.connect_get_namespaced_pod_exec = mocker.MagicMock()
+    ncmp._check_connection(c1, c2)
+
+    ncmp.connect_get_namespaced_pod_exec.assert_called_once_with(
+        c1, ['/bin/sh', '-c', 'ping -c 2 ip'])
+
+
+def test_ncmp_validate_connection_between(monkeypatch, mocker):
+    def new_init(self):
+        self.connectivity_status = {}
+        self.report = mocker.MagicMock()
+
+    monkeypatch.setattr(NCMashedPotato, '__init__', new_init)
+
+    c1 = Container("host0", "pod", "container", "ip")
+    c2 = Container("host1", "pod", "container", "ip")
+
+    ncmp = NCMashedPotato()
+
+    ncmp._containers = [c1, c2]
+    ncmp.connectivity_status = ncmp._generate_report_tempalte()
+
+    ncmp._check_connection = mocker.MagicMock(return_value=ncmp.OK)
+
+    ncmp._validate_connection_between(c1, c2)
+
+    ncmp._check_connection.assert_called_once_with(c1, c2)
+    ncmp.report.ok.assert_called_once()

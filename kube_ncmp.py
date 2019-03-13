@@ -331,6 +331,7 @@ class NCMashedPotato:
         connectivity_status = {}
         for host in hosts:
             connectivity_status[host] = {h: {} for h in hosts}
+
         return connectivity_status
 
     def _validate_connection_between(self, cnt_a, cnt_b):
