@@ -14,8 +14,10 @@
 # limitations under the License.
 
 import argparse
+from argparse import RawTextHelpFormatter
 import logging
 import json
+import yaml
 import time
 from pprint import pprint
 
@@ -50,10 +52,6 @@ class Config:
         return self._args.namespace
 
     @property
-    def filter(self):
-        return self._args.filter
-
-    @property
     def port(self):
         return self._args.port
 
@@ -69,8 +67,85 @@ class Config:
     def show_system_info(self):
         return self._args.show_system_info
 
+    @property
+    def whitelist(self):
+        return self._args.whitelist
+
+    @property
+    def blacklist(self):
+        return self._args.blacklist
+
 
 CONFIG = Config()
+
+
+class SomeListMissuse(Exception):
+    pass
+
+
+class SomeList:
+    """Parse whitelist/Blacklist:
+
+- host: mtn52r05o001
+  pod: *
+  container: *
+  ip: *
+- host: *
+  pod: *
+  container: *
+  ip: 172.25.255.1
+
+    """
+    def __init__(self):
+        self.is_blacklist = True if CONFIG.blacklist else False
+        self.is_whitelist = True if CONFIG.whitelist else False
+
+        if all([self.is_blacklist, self.is_whitelist]):
+            raise SomeListMissuse(
+                "Whitelist and blacklist can't be used same time.")
+
+        if self.is_whitelist or self.is_blacklist:
+            path = CONFIG.whitelist if CONFIG.whitelist else CONFIG.blacklist
+            with open(path, 'r') as fl:
+                try:
+                    self._somelist = yaml.load(fl)
+                except yaml.YAMLError as exc:
+                    logger.error("Error during Whitelist parsing: %s." % exc)
+                    CONFIG.whitelist = ""
+    
+    def is_list_enabled(self):
+        return any([self.is_blacklist, self.is_whitelist])
+
+    def is_container_in_somelist(self, cnt):
+        if not self.is_blacklist and not self.is_whitelist:
+            return True
+
+        for rule in self._somelist:
+            match_fields = []
+            if 'host' in rule:
+                match_fields.append('host')
+            if 'pod' in rule:
+                match_fields.append('pod')
+            if 'container' in rule:
+                match_fields.append('container')
+            if 'ip' in rule:
+                match_fields.append('ip')
+
+            if all(rule[key] == getattr(cnt, key) for key in match_fields):
+                return True
+
+        return False
+
+    def is_container_allowed(self, cnt):
+        if not self.is_list_enabled():
+            # Allow everything if no lists specifyed
+            return True
+
+        if self.is_whitelist and self.is_container_in_somelist(cnt):
+            return True
+        elif self.is_blacklist and not self.is_container_in_somelist(cnt):
+            return True
+        return False
 
 
 class Container:
@@ -158,13 +233,12 @@ class NCMashedPotato:
 
         # To communicate with Prometeus
         self.report = Report()
+        self.somelist = SomeList()
         self._containers = self._collect_all_containers()
         self._ping_containers = self._collect_containers_with_ping()
 
     def _collect_all_containers(self):
         os_pods = self.api.list_namespaced_pod(CONFIG.namespace).items
-        if CONFIG.filter:
-            os_pods = [p for p in os_pods if CONFIG.filter in p.metadata.name]
 
         containers = []
 
@@ -178,7 +252,9 @@ class NCMashedPotato:
                 cnt = Container(
                     host=host_name, pod=pod.metadata.name,
                     container=container_name, ip=pod.status.pod_ip)
-                containers.append(cnt)
+                
+                if self.somelist.is_container_allowed(cnt):
+                    containers.append(cnt)
 
         return containers
 
@@ -193,11 +269,12 @@ class NCMashedPotato:
 
         ping_pods = []
 
+        ping_responces = ["Usage: ping", "ping: missing host operand"]
         for container in self._containers:
             try:
                 resp = self.connect_get_namespaced_pod_exec(
                     container, ["/bin/sh", "-c", "ping"])
-                if "Usage: ping" in resp:
+                if any([True for i in ping_responces if i in resp]):
                     logger.debug("Ping found at %s" % container)
                     ping_pods.append(container)
             except Exception as err:
@@ -305,6 +382,7 @@ def parse_args_to_config():
         prog="NC Mashed Potato",
         description="Tool to validate interconnection between containers "
         "in kubernetes cloud.",
+        formatter_class=RawTextHelpFormatter
     )
     parser.add_argument(
         "--cache",
@@ -316,9 +394,35 @@ def parse_args_to_config():
         default="openstack",
         help="Kuberenetes namespace to play with.",
     )
-    parser.add_argument(
-        "--filter", default="", help="Pod should have it in name."
-    )
+    lists = parser.add_mutually_exclusive_group()
+    lists.add_argument(
+        "--whitelist", default="",
+        help="""Whitelist file.
+
+Example:
+- host: mtn52r05o001
+  pod: etcd
+  container: etcd1
+  ip: 1.1.1.1
+- host: mtn52r05o002
+  pod: etcd
+  container: etcd2
+  ip: 2.2.2.2
+        """)
+    lists.add_argument(
+        "--blacklist", default="",
+        help="""Blacklist file.
+
+Example:
+- host: mtn52r05o001
+  pod: etcd
+  container: etcd1
+  ip: 1.1.1.1
+- host: mtn52r05o002
+  pod: etcd
+  container: etcd2
+  ip: 2.2.2.2
+        """)
     parser.add_argument(
         "--port", type=int, default=8000, help="Port for Prometeus."
     )
